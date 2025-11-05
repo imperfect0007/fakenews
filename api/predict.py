@@ -15,6 +15,8 @@ import pandas as pd
 import os
 from pathlib import Path
 from typing import Dict, List
+import subprocess
+import urllib.request
 
 # Get the project root directory
 # In backend folder structure: api/predict.py -> backend/models
@@ -40,6 +42,90 @@ if FORCE_CPU:
 # Load only one model at a time to save memory
 # Set LOAD_MODELS=bert or LOAD_MODELS=deberta or LOAD_MODELS=both
 LOAD_MODELS = os.environ.get("LOAD_MODELS", "both").lower()
+
+# Google Drive File IDs for automatic model download (set in Render environment variables)
+DEBERTA_MODEL_GDRIVE_ID = os.environ.get("DEBERTA_MODEL_GDRIVE_ID", "")
+BERT_MODEL_GDRIVE_ID = os.environ.get("BERT_MODEL_GDRIVE_ID", "")
+
+def download_from_google_drive(file_id: str, output_path: Path):
+    """Download file from Google Drive using File ID"""
+    try:
+        print(f"[INFO] Downloading model from Google Drive: {file_id}")
+        url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        
+        # Create models directory if it doesn't exist
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Download using urllib
+        urllib.request.urlretrieve(url, str(output_path))
+        
+        # Check if file was downloaded (Google Drive may return HTML for large files)
+        file_size = output_path.stat().st_size
+        if file_size < 1024 * 1024:  # Less than 1MB, probably HTML error page
+            print(f"[WARNING] Downloaded file is too small ({file_size} bytes). Trying alternative method...")
+            
+            # Try alternative method using wget or curl via subprocess
+            try:
+                # Use curl if available
+                result = subprocess.run(
+                    ['curl', '-L', '-c', '/tmp/cookies.txt', '-o', str(output_path),
+                     f'https://drive.google.com/uc?export=download&id={file_id}'],
+                    capture_output=True,
+                    timeout=600  # 10 minute timeout for large files
+                )
+                if result.returncode == 0:
+                    file_size = output_path.stat().st_size
+                    if file_size > 1024 * 1024:  # Greater than 1MB
+                        print(f"[SUCCESS] Downloaded model: {file_size / (1024*1024):.2f} MB")
+                        return True
+            except Exception as e:
+                print(f"[ERROR] Alternative download method failed: {e}")
+            
+            # Delete the small file
+            output_path.unlink()
+            return False
+        
+        print(f"[SUCCESS] Downloaded model: {file_size / (1024*1024):.2f} MB")
+        return True
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to download from Google Drive: {e}")
+        return False
+
+def ensure_models_downloaded():
+    """Check if models exist, download from Google Drive if missing"""
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # Check DeBERTa model
+    deberta_paths = [
+        MODELS_DIR / "best_deberta_model.pt",
+        MODELS_DIR / "complete_deberta_model.pth",
+    ]
+    deberta_exists = any(p.exists() for p in deberta_paths)
+    
+    if not deberta_exists and DEBERTA_MODEL_GDRIVE_ID:
+        print("[INFO] DeBERTa model not found. Downloading from Google Drive...")
+        output_path = MODELS_DIR / "best_deberta_model.pt"
+        if download_from_google_drive(DEBERTA_MODEL_GDRIVE_ID, output_path):
+            print("[SUCCESS] DeBERTa model downloaded!")
+        else:
+            print("[WARNING] Failed to download DeBERTa model. Will try to load from local files.")
+    
+    # Check BERT model
+    bert_paths = [
+        MODELS_DIR / "best_bert_model_lower_accuracy.pt",
+        MODELS_DIR / "complete_bert_model.pth",
+        MODELS_DIR / "complete_bert_model.pt",
+    ]
+    bert_exists = any(p.exists() for p in bert_paths)
+    
+    if not bert_exists and BERT_MODEL_GDRIVE_ID:
+        print("[INFO] BERT model not found. Downloading from Google Drive...")
+        output_path = MODELS_DIR / "best_bert_model_lower_accuracy.pt"
+        if download_from_google_drive(BERT_MODEL_GDRIVE_ID, output_path):
+            print("[SUCCESS] BERT model downloaded!")
+        else:
+            print("[WARNING] Failed to download BERT model. Will try to load from local files.")
 
 # BERT Architecture (from your notebook)
 class BERT_Arch(nn.Module):
@@ -294,6 +380,10 @@ def load_models():
 # Load models on startup (optional - can be disabled for memory-constrained environments)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Startup: Download models from Google Drive if not present
+    print("[INFO] Checking for model files...")
+    ensure_models_downloaded()
+    
     # Startup: Optionally load models
     # Set LOAD_ON_STARTUP=false to disable loading on startup (lazy load instead)
     load_on_startup = os.environ.get("LOAD_ON_STARTUP", "false").lower() == "true"
