@@ -26,7 +26,20 @@ bert_model = None
 bert_tokenizer = None
 deberta_model = None
 deberta_tokenizer = None
+bert_loaded = False
+deberta_loaded = False
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# Memory optimization: Force CPU on Render (free tier has no GPU)
+# Set FORCE_CPU=true in Render environment variables to use CPU
+FORCE_CPU = os.environ.get("FORCE_CPU", "true").lower() == "true"
+if FORCE_CPU:
+    device = torch.device('cpu')
+    print(f"[INFO] Using CPU device (FORCE_CPU=true)")
+
+# Load only one model at a time to save memory
+# Set LOAD_MODELS=bert or LOAD_MODELS=deberta or LOAD_MODELS=both
+LOAD_MODELS = os.environ.get("LOAD_MODELS", "both").lower()
 
 # BERT Architecture (from your notebook)
 class BERT_Arch(nn.Module):
@@ -126,14 +139,21 @@ class DeBERTa_Arch(nn.Module):
         
         return x
 
-def load_models():
-    """Load both BERT and DeBERTa models"""
-    global bert_model, bert_tokenizer, deberta_model, deberta_tokenizer
+def load_bert_model():
+    """Load BERT model (lazy loading)"""
+    global bert_model, bert_tokenizer, bert_loaded
+    
+    if bert_loaded:
+        return
     
     try:
-        # Load BERT
         print("Loading BERT model...")
-        bert_base = AutoModel.from_pretrained('bert-base-uncased')
+        # Memory optimization: Clear cache before loading
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        # Load with low_cpu_mem_usage to save memory
+        bert_base = AutoModel.from_pretrained('bert-base-uncased', low_cpu_mem_usage=True)
         bert_tokenizer = BertTokenizerFast.from_pretrained('bert-base-uncased')
         
         # Try different possible BERT model filenames
@@ -177,16 +197,31 @@ def load_models():
         
         bert_model.to(device)
         bert_model.eval()
+        # Clear cache after loading
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        bert_loaded = True
         print("[SUCCESS] BERT model loaded successfully!")
         
     except Exception as e:
         print(f"Error loading BERT model: {e}")
         raise
+
+def load_deberta_model():
+    """Load DeBERTa model (lazy loading)"""
+    global deberta_model, deberta_tokenizer, deberta_loaded
+    
+    if deberta_loaded:
+        return
     
     try:
-        # Load DeBERTa
         print("Loading DeBERTa model...")
-        deberta_base = DebertaModel.from_pretrained('microsoft/deberta-base')
+        # Memory optimization: Clear cache before loading
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        # Load with low_cpu_mem_usage to save memory
+        deberta_base = DebertaModel.from_pretrained('microsoft/deberta-base', low_cpu_mem_usage=True)
         deberta_tokenizer = DebertaTokenizerFast.from_pretrained('microsoft/deberta-base')
         
         # Try different possible DeBERTa model filenames
@@ -230,23 +265,54 @@ def load_models():
         
         deberta_model.to(device)
         deberta_model.eval()
+        # Clear cache after loading
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        deberta_loaded = True
         print("[SUCCESS] DeBERTa model loaded successfully!")
         
     except Exception as e:
         print(f"Error loading DeBERTa model: {e}")
         raise
 
-# Load models on startup
+def load_models():
+    """Load models based on LOAD_MODELS environment variable"""
+    global bert_loaded, deberta_loaded
+    
+    if LOAD_MODELS in ["bert", "both"]:
+        try:
+            load_bert_model()
+        except Exception as e:
+            print(f"Warning: Could not load BERT model: {e}")
+    
+    if LOAD_MODELS in ["deberta", "both"]:
+        try:
+            load_deberta_model()
+        except Exception as e:
+            print(f"Warning: Could not load DeBERTa model: {e}")
+
+# Load models on startup (optional - can be disabled for memory-constrained environments)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Load models
-    try:
-        load_models()
-    except Exception as e:
-        print(f"Failed to load models: {e}")
-        # Don't fail startup if models fail to load
+    # Startup: Optionally load models
+    # Set LOAD_ON_STARTUP=false to disable loading on startup (lazy load instead)
+    load_on_startup = os.environ.get("LOAD_ON_STARTUP", "false").lower() == "true"
+    
+    if load_on_startup:
+        try:
+            print("[INFO] Loading models on startup...")
+            load_models()
+        except Exception as e:
+            print(f"Warning: Failed to load models on startup: {e}")
+            print("[INFO] Models will be loaded lazily on first request")
+    else:
+        print("[INFO] Skipping model loading on startup (lazy loading enabled)")
+        print("[INFO] Models will be loaded on first prediction request")
+    
     yield
     # Shutdown: cleanup if needed
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 app = FastAPI(title="BERT vs DeBERTa Fake Review Detection API", lifespan=lifespan)
 
@@ -307,10 +373,30 @@ def predict_text(text: str, model, tokenizer, max_length: int = 244):
 
 @app.get("/")
 def read_root():
+    models_status = []
+    if bert_loaded or LOAD_MODELS in ["bert", "both"]:
+        models_status.append("BERT")
+    if deberta_loaded or LOAD_MODELS in ["deberta", "both"]:
+        models_status.append("DeBERTa")
+    
     return {
         "message": "BERT vs DeBERTa Fake Review Detection API", 
-        "status": "running", 
-        "models": ["BERT", "DeBERTa"]
+        "status": "running",
+        "models": models_status,
+        "bert_loaded": bert_loaded,
+        "deberta_loaded": deberta_loaded,
+        "device": str(device)
+    }
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint with model status"""
+    return {
+        "status": "healthy",
+        "bert_loaded": bert_loaded,
+        "deberta_loaded": deberta_loaded,
+        "device": str(device),
+        "load_models": LOAD_MODELS
     }
 
 @app.get("/dataset")
@@ -360,39 +446,65 @@ async def get_dataset():
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/predict", response_model=PredictionResponse)
+@app.post("/predict")
 async def predict(request: PredictionRequest):
     """BERT vs DeBERTa comparison prediction for fake review detection"""
     if not request.text or not request.text.strip():
         raise HTTPException(status_code=400, detail="Text is required")
     
-    if bert_model is None or bert_tokenizer is None:
-        raise HTTPException(status_code=503, detail="BERT model not loaded yet. Please wait...")
+    # Lazy load models if not already loaded
+    if LOAD_MODELS in ["bert", "both"]:
+        if not bert_loaded:
+            try:
+                load_bert_model()
+            except Exception as e:
+                raise HTTPException(status_code=503, detail=f"Failed to load BERT model: {str(e)}")
     
-    if deberta_model is None or deberta_tokenizer is None:
-        raise HTTPException(status_code=503, detail="DeBERTa model not loaded yet. Please wait...")
+    if LOAD_MODELS in ["deberta", "both"]:
+        if not deberta_loaded:
+            try:
+                load_deberta_model()
+            except Exception as e:
+                raise HTTPException(status_code=503, detail=f"Failed to load DeBERTa model: {str(e)}")
+    
+    # Check if models are loaded
+    if LOAD_MODELS in ["bert", "both"]:
+        if bert_model is None or bert_tokenizer is None:
+            raise HTTPException(status_code=503, detail="BERT model not loaded yet. Please wait...")
+    
+    if LOAD_MODELS in ["deberta", "both"]:
+        if deberta_model is None or deberta_tokenizer is None:
+            raise HTTPException(status_code=503, detail="DeBERTa model not loaded yet. Please wait...")
     
     try:
-        # Get BERT prediction
-        bert_result = predict_text(
-            request.text,
-            bert_model,
-            bert_tokenizer,
-            max_length=244
-        )
+        results = {}
         
-        # Get DeBERTa prediction
-        deberta_result = predict_text(
-            request.text,
-            deberta_model,
-            deberta_tokenizer,
-            max_length=244
-        )
+        # Get BERT prediction (if enabled)
+        if LOAD_MODELS in ["bert", "both"]:
+            bert_result = predict_text(
+                request.text,
+                bert_model,
+                bert_tokenizer,
+                max_length=244
+            )
+            results["bert"] = bert_result
         
-        return {
-            "bert": bert_result,
-            "deberta": deberta_result
-        }
+        # Get DeBERTa prediction (if enabled)
+        if LOAD_MODELS in ["deberta", "both"]:
+            deberta_result = predict_text(
+                request.text,
+                deberta_model,
+                deberta_tokenizer,
+                max_length=244
+            )
+            results["deberta"] = deberta_result
+        
+        # Return only loaded models
+        if len(results) == 1:
+            # If only one model, return it directly
+            return results
+        else:
+            return results
     except Exception as e:
         print(f"Prediction error: {type(e).__name__}: {e}")
         import traceback
