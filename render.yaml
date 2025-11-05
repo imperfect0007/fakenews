@@ -2,7 +2,6 @@ services:
   - type: web
     name: deberta-api
     env: python
-    rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: cd api && uvicorn predict:app --host 0.0.0.0 --port $PORT
     envVars:
@@ -11,7 +10,7 @@ services:
       - key: FORCE_CPU
         value: "true"  # Force CPU to save memory (free tier has no GPU)
       - key: LOAD_ON_STARTUP
-        value: "false"  # Don't load models on startup (lazy load instead)
+        value: "true"  # Load models on startup (not lazy loading)
       - key: LOAD_MODELS
         value: "both"  # Load both models (change to "deberta" or "bert" for single model)
       # Add your Google Drive File IDs below (get from shareable links)
