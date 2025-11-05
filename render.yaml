@@ -2,8 +2,9 @@ services:
   - type: web
     name: deberta-api
     env: python
+    rootDir: backend
     buildCommand: pip install -r requirements.txt
-    startCommand: cd api && python -c "import uvicorn, os; uvicorn.run(__import__('predict').app, host='0.0.0.0', port=int(os.environ.get('PORT', 8000)))"
+    startCommand: cd api && uvicorn predict:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
