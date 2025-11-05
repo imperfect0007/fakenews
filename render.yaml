@@ -12,7 +12,12 @@ services:
       - key: LOAD_ON_STARTUP
         value: "false"  # Don't load models on startup (lazy load instead)
       - key: LOAD_MODELS
-        value: "deberta"  # Load only DeBERTa to save memory (change to "both" or "bert" if needed)
+        value: "both"  # Load both models (change to "deberta" or "bert" for single model)
+      # Add your Google Drive File IDs below (get from shareable links)
+      - key: DEBERTA_MODEL_GDRIVE_ID
+        value: "1_SVoPUDpVEs02LHhLk-fnUop5MjFlELn"  # DeBERTa model File ID
+      - key: BERT_MODEL_GDRIVE_ID
+        value: "1H9OHoVOJDuFglgoEeAaDu2hNbW50wYlV"  # BERT model File ID
     plan: starter  # Free tier (512MB RAM)
     # Render will set PORT automatically
 
