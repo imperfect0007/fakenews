@@ -563,7 +563,7 @@ def predict_text(text: str, model, tokenizer, max_length: int = 244):
         print(f"Input text: {text[:100]}...")
         raise
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def read_root():
     models_status = []
     if bert_loaded or LOAD_MODELS in ["bert", "both"]:
@@ -571,7 +571,7 @@ def read_root():
     if deberta_loaded or LOAD_MODELS in ["deberta", "both"]:
         models_status.append("DeBERTa")
     
-    return {
+    response = {
         "message": "BERT vs DeBERTa Fake Review Detection API", 
         "status": "running",
         "models": models_status,
@@ -579,17 +579,25 @@ def read_root():
         "deberta_loaded": deberta_loaded,
         "device": str(device)
     }
+    return response
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health_check():
     """Health check endpoint with model status"""
-    return {
+    response = {
         "status": "healthy",
         "bert_loaded": bert_loaded,
         "deberta_loaded": deberta_loaded,
         "device": str(device),
         "load_models": LOAD_MODELS
     }
+    return response
+
+@app.get("/favicon.ico")
+def favicon():
+    """Handle favicon requests to avoid 404 errors"""
+    from fastapi.responses import Response
+    return Response(status_code=204)  # No Content
 
 @app.get("/dataset")
 async def get_dataset():
