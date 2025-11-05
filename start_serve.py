@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
 Startup script for Render deployment
 Reads PORT from environment and starts uvicorn server
