@@ -47,6 +47,16 @@ LOAD_MODELS = os.environ.get("LOAD_MODELS", "both").lower()
 DEBERTA_MODEL_GDRIVE_ID = os.environ.get("DEBERTA_MODEL_GDRIVE_ID", "")
 BERT_MODEL_GDRIVE_ID = os.environ.get("BERT_MODEL_GDRIVE_ID", "")
 
+# HuggingFace URLs for model download (fallback if Google Drive fails)
+DEBERTA_MODEL_HF_URL = os.environ.get(
+    "DEBERTA_MODEL_HF_URL", 
+    "https://huggingface.co/imperfect0007/deberta/resolve/main/best_deberta_model.pt"
+)
+BERT_MODEL_HF_URL = os.environ.get(
+    "BERT_MODEL_HF_URL",
+    "https://huggingface.co/imperfect0007/bert/resolve/main/best_bert_model_lower_accuracy.pt"
+)
+
 def download_from_google_drive(file_id: str, output_path: Path):
     """Download file from Google Drive using File ID"""
     try:
@@ -93,6 +103,44 @@ def download_from_google_drive(file_id: str, output_path: Path):
         
     except Exception as e:
         print(f"[ERROR] Failed to download from Google Drive: {e}")
+        return False
+
+def download_from_huggingface(url: str, output_path: Path):
+    """Download file from HuggingFace URL"""
+    try:
+        print(f"[INFO] Downloading model from HuggingFace: {url}")
+        
+        # Create models directory if it doesn't exist
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Download using urllib with timeout
+        import socket
+        socket.setdefaulttimeout(120)  # 2 minute timeout for large files
+        
+        def reporthook(blocknum, blocksize, totalsize):
+            """Progress hook for download"""
+            if totalsize > 0:
+                percent = min(100, (blocknum * blocksize * 100) / totalsize)
+                if blocknum % 100 == 0:  # Print every 100 blocks
+                    print(f"[INFO] Download progress: {percent:.1f}%")
+        
+        urllib.request.urlretrieve(url, str(output_path), reporthook=reporthook)
+        socket.setdefaulttimeout(None)  # Reset timeout
+        
+        # Verify download was successful
+        file_size = output_path.stat().st_size
+        if file_size < 1024:  # Less than 1KB, probably an error page
+            print(f"[ERROR] Downloaded file is too small ({file_size} bytes). Download may have failed.")
+            output_path.unlink()
+            return False
+        
+        print(f"[SUCCESS] Downloaded model from HuggingFace: {file_size / (1024*1024):.2f} MB")
+        return True
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to download from HuggingFace: {e}")
+        if output_path.exists():
+            output_path.unlink()  # Clean up partial download
         return False
 
 def ensure_models_downloaded():
@@ -260,15 +308,28 @@ def load_bert_model():
         
         if not bert_model_path:
             # Try to download from Google Drive if File ID is configured
+            output_path = MODELS_DIR / "best_bert_model_lower_accuracy.pt"
+            download_success = False
+            
             if BERT_MODEL_GDRIVE_ID:
                 print("[INFO] BERT model not found. Attempting to download from Google Drive...")
-                output_path = MODELS_DIR / "best_bert_model_lower_accuracy.pt"
                 if download_from_google_drive(BERT_MODEL_GDRIVE_ID, output_path):
                     bert_model_path = output_path
-                else:
-                    raise FileNotFoundError(f"BERT model not found and download failed. Tried: {[str(p) for p in bert_model_paths]}")
-            else:
-                raise FileNotFoundError(f"BERT model not found. Tried: {[str(p) for p in bert_model_paths]}")
+                    download_success = True
+            
+            # If Google Drive download failed or not configured, try HuggingFace
+            if not download_success and BERT_MODEL_HF_URL:
+                print("[INFO] BERT model not found. Attempting to download from HuggingFace...")
+                if download_from_huggingface(BERT_MODEL_HF_URL, output_path):
+                    bert_model_path = output_path
+                    download_success = True
+            
+            if not download_success:
+                raise FileNotFoundError(
+                    f"BERT model not found and all download methods failed. "
+                    f"Tried: {[str(p) for p in bert_model_paths]}. "
+                    f"Configure BERT_MODEL_GDRIVE_ID or BERT_MODEL_HF_URL environment variables."
+                )
         print(f"Loading BERT model from: {bert_model_path}")
         # Use weights_only=False for PyTorch 2.6+ compatibility
         bert_checkpoint = torch.load(str(bert_model_path), map_location=device, weights_only=False)
@@ -337,15 +398,28 @@ def load_deberta_model():
         
         if not deberta_model_path:
             # Try to download from Google Drive if File ID is configured
+            output_path = MODELS_DIR / "best_deberta_model.pt"
+            download_success = False
+            
             if DEBERTA_MODEL_GDRIVE_ID:
                 print("[INFO] DeBERTa model not found. Attempting to download from Google Drive...")
-                output_path = MODELS_DIR / "best_deberta_model.pt"
                 if download_from_google_drive(DEBERTA_MODEL_GDRIVE_ID, output_path):
                     deberta_model_path = output_path
-                else:
-                    raise FileNotFoundError(f"DeBERTa model not found and download failed. Tried: {[str(p) for p in deberta_model_paths]}")
-            else:
-                raise FileNotFoundError(f"DeBERTa model not found. Tried: {[str(p) for p in deberta_model_paths]}")
+                    download_success = True
+            
+            # If Google Drive download failed or not configured, try HuggingFace
+            if not download_success and DEBERTA_MODEL_HF_URL:
+                print("[INFO] DeBERTa model not found. Attempting to download from HuggingFace...")
+                if download_from_huggingface(DEBERTA_MODEL_HF_URL, output_path):
+                    deberta_model_path = output_path
+                    download_success = True
+            
+            if not download_success:
+                raise FileNotFoundError(
+                    f"DeBERTa model not found and all download methods failed. "
+                    f"Tried: {[str(p) for p in deberta_model_paths]}. "
+                    f"Configure DEBERTA_MODEL_GDRIVE_ID or DEBERTA_MODEL_HF_URL environment variables."
+                )
         print(f"Loading DeBERTa model from: {deberta_model_path}")
         # Use weights_only=False for PyTorch 2.6+ compatibility
         deberta_checkpoint = torch.load(str(deberta_model_path), map_location=device, weights_only=False)
