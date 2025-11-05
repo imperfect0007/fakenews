@@ -1,0 +1,13 @@
+# Railway Nixpacks configuration
+[phases.setup]
+nixPkgs = ["python311", "nodejs-18_x"]
+
+[phases.install]
+cmds = [
+  "pip install -r requirements.txt",
+  "npm install"
+]
+
+[start]
+cmd = "cd api && python predict.py"
+

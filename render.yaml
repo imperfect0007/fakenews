@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: deberta-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: cd api && python predict.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    plan: starter  # Free tier
+    # Render will set PORT automatically
+
