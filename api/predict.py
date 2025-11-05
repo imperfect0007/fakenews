@@ -56,8 +56,11 @@ def download_from_google_drive(file_id: str, output_path: Path):
         # Create models directory if it doesn't exist
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Download using urllib
+        # Download using urllib with timeout
+        import socket
+        socket.setdefaulttimeout(30)  # 30 second timeout
         urllib.request.urlretrieve(url, str(output_path))
+        socket.setdefaulttimeout(None)  # Reset timeout
         
         # Check if file was downloaded (Google Drive may return HTML for large files)
         file_size = output_path.stat().st_size
@@ -94,38 +97,39 @@ def download_from_google_drive(file_id: str, output_path: Path):
 
 def ensure_models_downloaded():
     """Check if models exist, download from Google Drive if missing"""
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # Check DeBERTa model
-    deberta_paths = [
-        MODELS_DIR / "best_deberta_model.pt",
-        MODELS_DIR / "complete_deberta_model.pth",
-    ]
-    deberta_exists = any(p.exists() for p in deberta_paths)
-    
-    if not deberta_exists and DEBERTA_MODEL_GDRIVE_ID:
-        print("[INFO] DeBERTa model not found. Downloading from Google Drive...")
-        output_path = MODELS_DIR / "best_deberta_model.pt"
-        if download_from_google_drive(DEBERTA_MODEL_GDRIVE_ID, output_path):
-            print("[SUCCESS] DeBERTa model downloaded!")
-        else:
-            print("[WARNING] Failed to download DeBERTa model. Will try to load from local files.")
-    
-    # Check BERT model
-    bert_paths = [
-        MODELS_DIR / "best_bert_model_lower_accuracy.pt",
-        MODELS_DIR / "complete_bert_model.pth",
-        MODELS_DIR / "complete_bert_model.pt",
-    ]
-    bert_exists = any(p.exists() for p in bert_paths)
-    
-    if not bert_exists and BERT_MODEL_GDRIVE_ID:
-        print("[INFO] BERT model not found. Downloading from Google Drive...")
-        output_path = MODELS_DIR / "best_bert_model_lower_accuracy.pt"
-        if download_from_google_drive(BERT_MODEL_GDRIVE_ID, output_path):
-            print("[SUCCESS] BERT model downloaded!")
-        else:
-            print("[WARNING] Failed to download BERT model. Will try to load from local files.")
+    try:
+        MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # Check DeBERTa model
+        deberta_paths = [
+            MODELS_DIR / "best_deberta_model.pt",
+            MODELS_DIR / "complete_deberta_model.pth",
+        ]
+        deberta_exists = any(p.exists() for p in deberta_paths)
+        
+        if not deberta_exists and DEBERTA_MODEL_GDRIVE_ID:
+            print("[INFO] DeBERTa model not found. Will download on first request if needed.")
+            # Don't download during startup to avoid blocking
+            # Models will be downloaded lazily when needed
+        elif deberta_exists:
+            print("[INFO] DeBERTa model file found")
+        
+        # Check BERT model
+        bert_paths = [
+            MODELS_DIR / "best_bert_model_lower_accuracy.pt",
+            MODELS_DIR / "complete_bert_model.pth",
+            MODELS_DIR / "complete_bert_model.pt",
+        ]
+        bert_exists = any(p.exists() for p in bert_paths)
+        
+        if not bert_exists and BERT_MODEL_GDRIVE_ID:
+            print("[INFO] BERT model not found. Will download on first request if needed.")
+            # Don't download during startup to avoid blocking
+        elif bert_exists:
+            print("[INFO] BERT model file found")
+    except Exception as e:
+        print(f"[WARNING] Error checking models: {e}")
+        # Don't raise - allow server to start
 
 # BERT Architecture (from your notebook)
 class BERT_Arch(nn.Module):
@@ -255,7 +259,16 @@ def load_bert_model():
                 break
         
         if not bert_model_path:
-            raise FileNotFoundError(f"BERT model not found. Tried: {[str(p) for p in bert_model_paths]}")
+            # Try to download from Google Drive if File ID is configured
+            if BERT_MODEL_GDRIVE_ID:
+                print("[INFO] BERT model not found. Attempting to download from Google Drive...")
+                output_path = MODELS_DIR / "best_bert_model_lower_accuracy.pt"
+                if download_from_google_drive(BERT_MODEL_GDRIVE_ID, output_path):
+                    bert_model_path = output_path
+                else:
+                    raise FileNotFoundError(f"BERT model not found and download failed. Tried: {[str(p) for p in bert_model_paths]}")
+            else:
+                raise FileNotFoundError(f"BERT model not found. Tried: {[str(p) for p in bert_model_paths]}")
         print(f"Loading BERT model from: {bert_model_path}")
         # Use weights_only=False for PyTorch 2.6+ compatibility
         bert_checkpoint = torch.load(str(bert_model_path), map_location=device, weights_only=False)
@@ -323,7 +336,16 @@ def load_deberta_model():
                 break
         
         if not deberta_model_path:
-            raise FileNotFoundError(f"DeBERTa model not found. Tried: {[str(p) for p in deberta_model_paths]}")
+            # Try to download from Google Drive if File ID is configured
+            if DEBERTA_MODEL_GDRIVE_ID:
+                print("[INFO] DeBERTa model not found. Attempting to download from Google Drive...")
+                output_path = MODELS_DIR / "best_deberta_model.pt"
+                if download_from_google_drive(DEBERTA_MODEL_GDRIVE_ID, output_path):
+                    deberta_model_path = output_path
+                else:
+                    raise FileNotFoundError(f"DeBERTa model not found and download failed. Tried: {[str(p) for p in deberta_model_paths]}")
+            else:
+                raise FileNotFoundError(f"DeBERTa model not found. Tried: {[str(p) for p in deberta_model_paths]}")
         print(f"Loading DeBERTa model from: {deberta_model_path}")
         # Use weights_only=False for PyTorch 2.6+ compatibility
         deberta_checkpoint = torch.load(str(deberta_model_path), map_location=device, weights_only=False)
@@ -380,9 +402,14 @@ def load_models():
 # Load models on startup (optional - can be disabled for memory-constrained environments)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Download models from Google Drive if not present
+    # Startup: Download models from Google Drive if not present (non-blocking)
     print("[INFO] Checking for model files...")
-    ensure_models_downloaded()
+    try:
+        # Run model download check in a way that doesn't block server startup
+        ensure_models_downloaded()
+    except Exception as e:
+        print(f"[WARNING] Model download check failed (non-fatal): {e}")
+        print("[INFO] Server will continue. Models will be downloaded on first request if needed.")
     
     # Startup: Optionally load models
     # Set LOAD_ON_STARTUP=false to disable loading on startup (lazy load instead)
@@ -393,12 +420,13 @@ async def lifespan(app: FastAPI):
             print("[INFO] Loading models on startup...")
             load_models()
         except Exception as e:
-            print(f"Warning: Failed to load models on startup: {e}")
+            print(f"[WARNING] Failed to load models on startup: {e}")
             print("[INFO] Models will be loaded lazily on first request")
     else:
         print("[INFO] Skipping model loading on startup (lazy loading enabled)")
         print("[INFO] Models will be loaded on first prediction request")
     
+    print("[INFO] FastAPI server is ready to accept requests")
     yield
     # Shutdown: cleanup if needed
     if torch.cuda.is_available():
