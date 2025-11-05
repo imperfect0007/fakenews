@@ -3,10 +3,16 @@ services:
     name: deberta-api
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: cd api && python predict.py
+    startCommand: cd api && uvicorn predict:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
-    plan: starter  # Free tier
+      - key: FORCE_CPU
+        value: "true"  # Force CPU to save memory (free tier has no GPU)
+      - key: LOAD_ON_STARTUP
+        value: "false"  # Don't load models on startup (lazy load instead)
+      - key: LOAD_MODELS
+        value: "deberta"  # Load only DeBERTa to save memory (change to "both" or "bert" if needed)
+    plan: starter  # Free tier (512MB RAM)
     # Render will set PORT automatically
 
